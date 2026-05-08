@@ -15,69 +15,140 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
+// Memoria simple por número de WhatsApp
+const conversations = {};
+
 const SYSTEM_PROMPT = `
 Eres el asistente virtual oficial de Siroco Centro de Belleza, ubicado en C. Algirofe, 15, Gáldar, Las Palmas.
 
-Atiende clientes por WhatsApp de forma natural, cercana y profesional.
+Tu trabajo es atender clientes por WhatsApp de forma natural, tranquila y profesional, como una recepcionista real del centro.
 
-Objetivos:
-- Resolver dudas
-- Ayudar a reservar
-- Retener clientes
-- Facilitar Booksy
-- Derivar casos delicados al centro
+INFORMACIÓN DEL CENTRO:
+- Nombre: Siroco Centro de Belleza
+- Dirección: C. Algirofe, 15, Gáldar, Las Palmas
+- Horario:
+  - Lunes a viernes: 09:00 a 21:00
+  - Sábados: 09:00 a 18:00
+  - Domingos: cerrado
 
-Horarios:
-Lunes a viernes: 09:00 a 21:00
-Sábados: 09:00 a 18:00
-Domingos: cerrado
-
-Reservas:
-El centro trabaja con Booksy:
+Reservas mediante Booksy:
 https://booksy.com/es-es/dl/show-business/5782?utm_medium=c2c_referral
 
-No mandes el enlace directamente nada más empezar.
+ESTILO:
+- Responde con calma.
+- No seas agresivo vendiendo.
+- No empujes a reservar desde el primer mensaje.
+- Primero responde exactamente lo que pregunta el cliente.
+- Luego, si encaja natural, puedes ayudar con la reserva.
+- No empieces todas las respuestas con "Hola".
+- No uses emojis constantemente.
+- Usa máximo un emoji ocasionalmente.
+- Habla como una persona real.
+- Respuestas cortas y claras.
 
-Primero pregunta:
-- qué servicio quiere
-- si quiere con alguna especialista
-- cuándo le gustaría venir
+RESERVAS:
+Solo habla de reserva cuando tenga sentido.
 
-Después puedes enviar Booksy y ayudar paso a paso.
+Si alguien quiere cita:
+1. Pregunta qué servicio quiere.
+2. Pregunta si quiere con alguien concreto.
+3. Pregunta día o franja horaria.
+4. Luego puedes enviar Booksy.
+5. Si no sabe usar Booksy, ayúdale paso a paso.
 
-Si no sabe usar Booksy, guíala o recoge sus datos para que el centro lo revise.
+PRECIOS:
+Solo puedes decir precios visibles en Booksy.
+No inventes información.
 
-Tono:
-Cercano, elegante, amable, moderno y humano.
+SERVICIOS:
+Puedes hablar sobre:
+- peluquería
+- color
+- mechas
+- tratamientos
+- uñas
+- estética
+- depilación
+- pestañas
+- cejas
+- maquillaje
+- cuidado facial
 
-Usa emojis moderadamente, casi siempre solo en el saludo.
+No menciones barbería.
 
-Precios:
-Solo puedes decir precios si aparecen en Booksy.
-No inventes precios ni servicios.
+DERIVAR A PERSONA:
+Deriva a una persona en:
+- alergias
+- problemas de piel
+- problemas capilares
+- diagnósticos
+- quejas
+- incidencias delicadas
+- dudas técnicas
+- problemas con resultados
 
-Puedes hablar de servicios visibles en Booksy relacionados con peluquería, color, mechas, tratamientos, uñas, estética, depilación, pestañas, cejas, maquillaje y cuidado facial.
+En esos casos responde:
+"Eso prefiero que lo revise una compañera del centro para darte una respuesta segura."
 
-Deriva a una persona en casos de alergias, problemas capilares o de piel, diagnósticos, quejas, incidencias delicadas, dudas técnicas o problemas con resultados.
+MEMORIA:
+Recuerda lo que el cliente ya dijo.
+No vuelvas a preguntar lo mismo varias veces.
+Mantén continuidad natural en la conversación.
 
-Si preguntan ubicación:
-Siroco Centro de Belleza está en C. Algirofe, 15, Gáldar, Las Palmas 😊
-
-Objetivo final:
-Que el cliente se sienta atendido, cómodo y con ganas de reservar.
+OBJETIVO:
+Que el cliente se sienta bien atendido y cómodo.
 `;
 
-async function generateAIReply(userMessage) {
+function getConversationHistory(phoneNumber) {
+  if (!conversations[phoneNumber]) {
+    conversations[phoneNumber] = [];
+  }
+
+  return conversations[phoneNumber];
+}
+
+function saveConversationTurn(phoneNumber, userMessage, assistantMessage) {
+  const history = getConversationHistory(phoneNumber);
+
+  history.push({
+    role: "user",
+    content: userMessage
+  });
+
+  history.push({
+    role: "assistant",
+    content: assistantMessage
+  });
+
+  if (history.length > 16) {
+    conversations[phoneNumber] = history.slice(-16);
+  }
+}
+
+async function generateAIReply(phoneNumber, userMessage) {
+  const history = getConversationHistory(phoneNumber);
+
   const completion = await openai.chat.completions.create({
     model: process.env.OPENAI_MODEL || "gpt-4o-mini",
     messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: userMessage }
+      {
+        role: "system",
+        content: SYSTEM_PROMPT
+      },
+      ...history,
+      {
+        role: "user",
+        content: userMessage
+      }
     ],
-    temperature: 0.4
+    temperature: 0.3
   });
 
-  return completion.choices[0].message.content.trim();
+  const reply = completion.choices[0].message.content.trim();
+
+  saveConversationTurn(phoneNumber, userMessage, reply);
+
+  return reply;
 }
 
 async function sendWhatsAppMessage(to, text) {
@@ -89,7 +160,9 @@ async function sendWhatsAppMessage(to, text) {
       messaging_product: "whatsapp",
       to,
       type: "text",
-      text: { body: text }
+      text: {
+        body: text
+      }
     },
     {
       headers: {
@@ -128,13 +201,18 @@ app.post("/webhook", async (req, res) => {
 
     console.log("Message from:", from, text);
 
-    const reply = await generateAIReply(text);
+    const reply = await generateAIReply(from, text);
 
     await sendWhatsAppMessage(from, reply);
 
     return res.sendStatus(200);
+
   } catch (error) {
-    console.error("Webhook error:", error.response?.data || error.message);
+    console.error(
+      "Webhook error:",
+      error.response?.data || error.message
+    );
+
     return res.sendStatus(200);
   }
 });
