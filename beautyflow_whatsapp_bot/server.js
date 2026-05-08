@@ -49,3 +49,8 @@ Siroco Centro de Belleza está en C. Algirofe, 15, Gáldar, Las Palmas
 Objetivo final:
 Que el cliente se sienta atendido, cómodo y con ganas de reservar.
 `;
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log(`Siroco bot running on port ${PORT}`);
+});
